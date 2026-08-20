@@ -2797,7 +2797,7 @@ const _club = CLUBS[_clubParam] || (/^\d+$/.test(_clubParam) ? {id:Number(_clubP
 const CLUB_ID = _club.id;
 document.title = 'ODR · ' + _club.name;
 const CLUB_NAME = _club.name;  // shown in the logo as "OPR · <name>"
-const OPR_VERSION = "ODR-LAPTOP v2026.08.17-32";  // RR FINISH CHOICE at generation (single-group): added etRRFinishHTML/etRRFinishSet + wired into etGroupConfigHTML (both no-splits and single-group-within-splits) + playoffSize on cfg — brings OSR to parity with OTR. Post-completion build still confirms top 2 or 4 (unchanged). Multi-group snake/block config, allocation engine, and 2/4 prompt untouched. // Handicap entry is now SEAMLESS (Option B): entering a handicap event's score on the main +enter screen silently routes to the safe tournament path (matches teams→fixture→record_fixture_result, server-gated). Same familiar screen; the rating engine (submit_match/recompute) is NEVER called for handicap events. No Rounds-tab detour needed.
+const OPR_VERSION = "ODR-LAPTOP v2026.08.17-33";  // RR FINISH CHOICE at generation (single-group): added etRRFinishHTML/etRRFinishSet + wired into etGroupConfigHTML (both no-splits and single-group-within-splits) + playoffSize on cfg — brings OSR to parity with OTR. Post-completion build still confirms top 2 or 4 (unchanged). Multi-group snake/block config, allocation engine, and 2/4 prompt untouched. // Handicap entry is now SEAMLESS (Option B): entering a handicap event's score on the main +enter screen silently routes to the safe tournament path (matches teams→fixture→record_fixture_result, server-gated). Same familiar screen; the rating engine (submit_match/recompute) is NEVER called for handicap events. No Rounds-tab detour needed.
 // Explanation shown above the individual ladder. Open on load so it's read; collapsible
 // (state kept for the session) and scrolls away. Mechanics only — no outcome framing, so
 // members aren't nudged away from playing stronger opponents. Every clause maps to a real
@@ -4865,7 +4865,11 @@ async function submitMatch(){
           // doubles: >=2 of 4 names is a confident match (allows a stand-in).
           // singles: there are only 2 names, so BOTH must match — no stand-ins possible.
           const _need = (entryData.format==='singles') ? 2 : 2;
-          if(sc>=_need) scored.push({round:f.round, score:sc});
+          // KNOCKOUT FIX: capture the actual fixture + true orientation (which entered team is
+          // seed_a). s1>=s2 means t1 aligns with seed_a's pair. This lets us lock the score to
+          // the exact fixture like the active-bracket entry does — no server-side seed guessing,
+          // no winner-flip. Only knockout-family fixtures carry a next-slot, so gate to those.
+          if(sc>=_need) scored.push({round:f.round, score:sc, id:f.id, round_type:f.round_type, aIsT1:(s1>=s2)});
         });
         // any already-PLAYED fixtures for this same pairing (to flag double-ups)
         const playedRounds = fixes.filter(f=>f.sets_a!=null).map(f=>{
@@ -4883,6 +4887,7 @@ async function submitMatch(){
         } else {
           const top=Math.max(...scored.map(s=>s.score));
           const topRounds=[...new Set(scored.filter(s=>s.score===top).map(s=>s.round))].sort((a,b)=>a-b);
+          const topFix=scored.filter(s=>s.score===top);
           if(topRounds.length>1){
             // AMBIGUOUS — name the target round (earliest), flag any already-scored round
             const target=topRounds[0];
@@ -4891,6 +4896,17 @@ async function submitMatch(){
             msg+='It will be placed in Round '+target+' (the earliest open one). OK to save & place there, or Cancel to save nothing.';
             if(!confirm(msg)){ return; } // nothing written
             entryData._forceFixtureRound=target; // tell the server which round to use
+            // If, despite multiple rounds, exactly one fixture in the chosen round is a
+            // knockout match, still lock it so orientation is correct.
+            const koInTarget=topFix.filter(s=>s.round===target && (s.round_type==='ko'||s.round_type==='plate'||s.round_type==='final'));
+            if(koInTarget.length===1){ entryData._forceFixtureId=koInTarget[0].id; entryData._forceFixtureAIsT1=koInTarget[0].aIsT1; }
+          } else {
+            // ONE round matched. If it's a single KNOCKOUT fixture, lock the exact fixture +
+            // orientation (follow the active-bracket lead): the score is written to THIS fixture
+            // with the correct seed_a/seed_b side — no server seed-guessing, no winner-flip.
+            entryData._forceFixtureRound=topRounds[0];
+            const koHere=topFix.filter(s=>s.round_type==='ko'||s.round_type==='plate'||s.round_type==='final');
+            if(koHere.length===1){ entryData._forceFixtureId=koHere[0].id; entryData._forceFixtureAIsT1=koHere[0].aIsT1; }
           }
         }
       }
@@ -5031,9 +5047,15 @@ async function doSubmit(btn){  const err=document.getElementById('err4');
       t1_games:entryData.t1games, t2_games:entryData.t2games,
       set_scores:setParts.join(','),
       match_format: 'singles',   // one entity per side = the pair rail
-      force_fixture_round: entryData._forceFixtureRound || null
+      force_fixture_round: entryData._forceFixtureRound || null,
+      // KNOCKOUT FIX: when the front end has resolved the EXACT fixture + orientation, send them
+      // so the server writes the score to that fixture with the correct seed_a/seed_b side
+      // (like the active-bracket entry). Absent for RR/Swiss/social/ladder/external — untouched.
+      force_fixture_id: entryData._forceFixtureId || null,
+      force_fixture_a_is_t1: (entryData._forceFixtureAIsT1===true || entryData._forceFixtureAIsT1===false) ? entryData._forceFixtureAIsT1 : null
     };
     entryData._forceFixtureRound = null; // one-shot; don't carry to the next match
+    entryData._forceFixtureId = null; entryData._forceFixtureAIsT1 = null; // one-shot
     // Call the SECURE submit-match function: it verifies the PIN server-side,
     // inserts the match, and triggers the full recompute. PIN never stored in the app.
     let result=null;
